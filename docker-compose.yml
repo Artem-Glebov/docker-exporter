@@ -1,0 +1,9 @@
+services:
+  docker-exporter:
+    build: 
+      context: .
+      dockerfile: Dockerfile-docker-exporter
+    container_name: docker-exporter
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
