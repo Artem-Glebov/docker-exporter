@@ -1,0 +1,148 @@
+groups:
+  - name: docker-exporter
+    rules:
+      # --- exporter and daemon availability ---------------------------------
+      - alert: DockerExporterDown
+        expr: up{job="docker-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Docker exporter is not scrapeable"
+          description: >-
+            Prometheus cannot scrape {{ $labels.instance }}. Container metrics for
+            this host are blind until it returns.
+
+      - alert: DockerDaemonUnreachable
+        # The exporter stays up and keeps serving when the daemon dies, so `up`
+        # alone will not catch this -- docker_up is what reports the daemon.
+        expr: docker_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Exporter cannot reach the Docker daemon"
+          description: >-
+            {{ $labels.instance }} is serving metrics but cannot talk to the Docker
+            API. Container metrics are stale.
+
+      - alert: DockerExporterScrapeErrors
+        expr: increase(docker_exporter_scrape_errors_total[10m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Docker exporter is failing scrapes"
+          description: >-
+            {{ $value | printf "%.0f" }} failed scrapes in the last 10 minutes on
+            {{ $labels.instance }}.
+
+      # --- container lifecycle ----------------------------------------------
+      - alert: DockerContainerCrashLooping
+        # The state the previous exporter could not see at all: a container that
+        # the daemon keeps restarting never settles into `running` or `exited`.
+        expr: docker_container_state{state="restarting"} == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Container {{ $labels.container_name }} is stuck restarting"
+          description: >-
+            {{ $labels.container_name }} ({{ $labels.image }}) has been in the
+            restarting state for over 5 minutes on {{ $labels.instance }}.
+
+      - alert: DockerContainerRestartFlapping
+        expr: increase(docker_container_restarts_total[15m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.container_name }} is restarting repeatedly"
+          description: >-
+            {{ $value | printf "%.0f" }} restarts in 15 minutes for
+            {{ $labels.container_name }} ({{ $labels.image }}).
+
+      # A clean `docker stop` exits 0, so requiring a non-zero code keeps
+      # deliberate shutdowns out of the alert. Like the OOM alerts below, a
+      # container that failed once and was never cleaned up would otherwise
+      # page forever -- split by how long ago it stopped, using
+      # docker_container_finished_time_seconds.
+      - alert: DockerContainerExitedUnexpectedly
+        expr: |
+          ((time() - docker_container_finished_time_seconds)
+            and on (container_id, container_name, image)
+          ((docker_container_state{state="exited"} == 1)
+            and on (container_id, container_name, image)
+          (docker_container_last_exit_code != 0))) < 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.container_name }} exited with an error"
+          description: >-
+            {{ $labels.container_name }} ({{ $labels.image }}) stopped after a
+            non-zero exit code {{ $value | humanizeDuration }} ago.
+
+      - alert: DockerContainerExitedUnexpectedlyStale
+        expr: |
+          ((time() - docker_container_finished_time_seconds)
+            and on (container_id, container_name, image)
+          ((docker_container_state{state="exited"} == 1)
+            and on (container_id, container_name, image)
+          (docker_container_last_exit_code != 0))) >= 900
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "Container {{ $labels.container_name }} has an old unhandled failure"
+          description: >-
+            {{ $labels.container_name }} ({{ $labels.image }}) failed and stopped
+            {{ $value | humanizeDuration }} ago and has not been restarted or
+            removed since. Not urgent, but worth a cleanup pass.
+
+      # docker_container_oom_killed reflects the container's *last* exit, not a
+      # point-in-time event -- it stays 1 until the container is removed or
+      # restarted. Split by recency so a three-week-old dead container pages at
+      # warning, not critical, forever.
+      - alert: DockerContainerOOMKilled
+        expr: |
+          ((time() - docker_container_finished_time_seconds)
+            and on (container_id, container_name, image)
+          (docker_container_oom_killed == 1)) < 900
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Container {{ $labels.container_name }} was just OOM killed"
+          description: >-
+            The kernel OOM killer terminated {{ $labels.container_name }}
+            ({{ $labels.image }}) {{ $value | humanizeDuration }} ago. Review its
+            memory limit.
+
+      - alert: DockerContainerOOMKilledStale
+        expr: |
+          ((time() - docker_container_finished_time_seconds)
+            and on (container_id, container_name, image)
+          (docker_container_oom_killed == 1)) >= 900
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.container_name }} has an unresolved OOM kill"
+          description: >-
+            {{ $labels.container_name }} ({{ $labels.image }}) last exited via OOM
+            kill {{ $value | humanizeDuration }} ago and is still sitting dead.
+            Remove or restart it to clear this -- it will keep firing at warning
+            severity until then.
+
+      # --- healthchecks ------------------------------------------------------
+      - alert: DockerContainerUnhealthy
+        expr: docker_container_health{status="unhealthy"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.container_name }} is unhealthy"
+          description: >-
+            The HEALTHCHECK for {{ $labels.container_name }} ({{ $labels.image }})
+            has been failing for over 5 minutes.

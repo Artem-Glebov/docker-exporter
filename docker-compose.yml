@@ -1,9 +1,148 @@
+name: docker-exporter
+
+# Default `docker compose up` starts only the exporter and its socket proxy.
+# `docker compose --profile monitoring up` adds Prometheus and Grafana, wired to
+# the configs in this repository, for local verification.
+
 services:
+  # The only container that touches the Docker socket. It exposes a deny-by-default
+  # subset of the Engine API over TCP, so the exporter itself never gets socket
+  # access -- which is also what lets the exporter run as an unprivileged UID.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    container_name: docker-socket-proxy
+    restart: unless-stopped
+    environment:
+      # Everything the exporter needs, and nothing else.
+      CONTAINERS: 1   # GET /containers/json and /containers/{id}/json
+      VERSION: 1      # GET /version, used for docker_daemon_info and API negotiation
+      PING: 1         # GET /_ping, read-only, kept for operator debugging
+      # Explicitly denied. These are already the image defaults; they are spelled
+      # out so that an accidental future change is visible in review.
+      POST: 0         # blocks every mutating call regardless of the toggles below
+      AUTH: 0
+      BUILD: 0
+      COMMIT: 0
+      CONFIGS: 0
+      DISTRIBUTION: 0
+      EVENTS: 0
+      EXEC: 0
+      IMAGES: 0
+      INFO: 0
+      NETWORKS: 0
+      NODES: 0
+      PLUGINS: 0
+      SECRETS: 0
+      SERVICES: 0
+      SESSION: 0
+      SWARM: 0
+      SYSTEM: 0
+      TASKS: 0
+      VOLUMES: 0
+    volumes:
+      # :ro is a property of the socket inode, NOT of the API reachable through it.
+      # It is kept as defence in depth, but the real control is the ACL above.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    expose:
+      - "2375"
+    networks:
+      - docker-api
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.25"
+
   docker-exporter:
-    build: 
+    build:
       context: .
-      dockerfile: Dockerfile-docker-exporter
+      dockerfile: Dockerfile
+    image: prometheus-docker-exporter:1.0.0
     container_name: docker-exporter
     restart: unless-stopped
+    depends_on:
+      - docker-socket-proxy
+    environment:
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+      EXPORTER_PORT: "8088"
+      LOG_LEVEL: INFO
+      LOG_FORMAT: text
+    ports:
+      # /metrics is unauthenticated, so it is bound to loopback by default.
+      # Change to "8088:8088" only behind a trusted network or a reverse proxy.
+      - "127.0.0.1:8088:8088"
+    networks:
+      - docker-api
+      - monitoring
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.50"
+
+  prometheus:
+    image: prom/prometheus:v3.13.3
+    container_name: prometheus
+    profiles: [monitoring]
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts:/etc/prometheus/alerts:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - monitoring
+    security_opt:
+      - no-new-privileges:true
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    container_name: grafana
+    profiles: [monitoring]
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      # Local verification stack only. Do not reuse this anonymous-admin setup
+      # anywhere reachable from outside the host.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - monitoring
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  # Carries only exporter -> proxy traffic. internal:true means no route off the host.
+  docker-api:
+    internal: true
+  monitoring:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:

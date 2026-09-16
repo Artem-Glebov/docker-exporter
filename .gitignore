@@ -1,1 +1,16 @@
-CLAUDE.md
+# Python
+venv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Local monitoring stack state
+grafana-data/
+prometheus-data/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

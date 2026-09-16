@@ -1,0 +1,5 @@
+# Pinned so image builds are reproducible. Versions verified current 2026-09-16.
+docker==7.2.0
+prometheus-client==0.26.0
+# Imported directly for its exception types (also a docker dependency).
+requests==2.34.2

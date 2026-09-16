@@ -1,0 +1,64 @@
+# OpenTelemetry Collector (contrib) config that scrapes this exporter and
+# forwards the metrics over OTLP. Use it to feed any OTLP backend -- Datadog,
+# Grafana Cloud, Honeycomb, New Relic, Tempo/Mimir -- without running Prometheus.
+#
+# Requires the contrib distribution: otel/opentelemetry-collector-contrib:0.161.0
+#
+# Note: VictoriaMetrics, Thanos, Grafana Mimir and Grafana Alloy all speak the
+# Prometheus scrape protocol directly, so for those you point them at
+# http://docker-exporter:8088/metrics and skip this collector entirely.
+
+receivers:
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: docker-exporter
+          scrape_interval: 15s
+          scrape_timeout: 12s
+          static_configs:
+            - targets: ['docker-exporter:8088']
+
+processors:
+  # Always first in the pipeline: bounds collector memory before anything else runs.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+
+  resourcedetection:
+    detectors: [env, system]
+    system:
+      hostname_sources: [os]
+
+  # Marks the origin of these series so they are distinguishable in a shared backend.
+  resource:
+    attributes:
+      - key: service.name
+        value: prometheus-docker-exporter
+        action: upsert
+
+exporters:
+  otlp:
+    endpoint: ${env:OTLP_ENDPOINT}
+    headers:
+      # Supply the backend's key via the environment, never inline in this file.
+      api-key: ${env:OTLP_API_KEY}
+    tls:
+      insecure: false
+
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    metrics:
+      receivers: [prometheus]
+      processors: [memory_limiter, resourcedetection, resource, batch]
+      exporters: [otlp]
+  telemetry:
+    logs:
+      level: info
