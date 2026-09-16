@@ -1,5 +1,10 @@
 apiVersion: 1
 
+# Both are provisioned regardless of which compose profile is running --
+# whichever one you actually started (`monitoring` or `vm`) is the one that
+# resolves; the other just shows unreachable in Grafana's datasource health
+# check until its own profile is up. The dashboard picks the datasource via
+# its own `${datasource}` template variable, so it works with either.
 datasources:
   - name: Prometheus
     type: prometheus
@@ -7,6 +12,18 @@ datasources:
     access: proxy
     url: http://prometheus:9090
     isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s
+
+  - name: VictoriaMetrics
+    # VictoriaMetrics implements the same Prometheus HTTP query API, so the
+    # stock "prometheus" datasource type works against it unchanged.
+    type: prometheus
+    uid: victoriametrics
+    access: proxy
+    url: http://victoria-metrics:8428
+    isDefault: false
     editable: false
     jsonData:
       timeInterval: 15s

@@ -3,6 +3,11 @@ name: docker-exporter
 # Default `docker compose up` starts only the exporter and its socket proxy.
 # `docker compose --profile monitoring up` adds Prometheus and Grafana, wired to
 # the configs in this repository, for local verification.
+# `docker compose --profile vm up` is the same idea with VictoriaMetrics + vmalert
+# instead of Prometheus -- it reuses the identical prometheus/ config files, since
+# vmagent/vmsingle read Prometheus scrape configs natively. Grafana still points at
+# whichever datasource is running; only one of the two profiles is meant to run
+# at a time (both would work, there's just no reason to double-scrape).
 
 services:
   # The only container that touches the Docker socket. It exposes a deny-by-default
@@ -112,13 +117,75 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # Alternative to prometheus+scraping: reuses the same prometheus.yml unchanged
+  # (vmsingle reads Prometheus scrape configs directly via -promscrape.config).
+  victoria-metrics:
+    image: victoriametrics/victoria-metrics:v1.152.0
+    container_name: victoria-metrics
+    profiles: [vm]
+    restart: unless-stopped
+    command:
+      - --promscrape.config=/etc/prometheus/prometheus.yml
+      # prometheus.yml carries evaluation_interval/rule_files, which are
+      # Prometheus-only sections VM's own strict parser rejects outright
+      # (VM doesn't evaluate rules itself -- that's vmalert's job below).
+      # This is the exact flag VM's own error message names for reusing an
+      # unmodified prometheus.yml.
+      - --promscrape.config.strictParse=false
+      - --storageDataPath=/storage
+      - --retentionPeriod=1y
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - victoria-metrics-data:/storage
+    ports:
+      - "127.0.0.1:8428:8428"
+    networks:
+      - monitoring
+    security_opt:
+      - no-new-privileges:true
+
+  # Alertmanager is intentionally not wired up here, same as the Prometheus
+  # profile -- vmalert evaluates and exposes alert state without -notifier.url,
+  # it just has nowhere to send notifications yet.
+  vmalert:
+    image: victoriametrics/vmalert:v1.152.0
+    container_name: vmalert
+    profiles: [vm]
+    restart: unless-stopped
+    depends_on:
+      - victoria-metrics
+    command:
+      - --datasource.url=http://victoria-metrics:8428
+      - --remoteWrite.url=http://victoria-metrics:8428
+      - --remoteRead.url=http://victoria-metrics:8428
+      - --rule=/etc/prometheus/alerts/*.yml
+      - --evaluationInterval=15s
+      # vmalert refuses to start at all with alerting rules loaded unless one
+      # of -notifier.url/-notifier.config/-notifier.blackhole is set (learned
+      # by hitting the fatal error, not from the docs). No Alertmanager is
+      # wired up here, same as the plain-Prometheus profile -- blackhole just
+      # means alerts still evaluate and show up via vmalert's own API, with
+      # nowhere to actually deliver a notification yet.
+      - --notifier.blackhole
+    volumes:
+      - ./prometheus/alerts:/etc/prometheus/alerts:ro
+    ports:
+      - "127.0.0.1:8880:8880"
+    networks:
+      - monitoring
+    security_opt:
+      - no-new-privileges:true
+
   grafana:
     image: grafana/grafana:13.2.2
     container_name: grafana
-    profiles: [monitoring]
+    # Belongs to both profiles: `docker compose depends_on` requires every
+    # dependency to be active in the same profile set, so this can't depend on
+    # `prometheus` specifically without also pulling it into the `vm` profile.
+    # Both datasources are provisioned (see grafana/provisioning/datasources/);
+    # whichever backend you actually started is the one that resolves.
+    profiles: [monitoring, vm]
     restart: unless-stopped
-    depends_on:
-      - prometheus
     environment:
       # Local verification stack only. Do not reuse this anonymous-admin setup
       # anywhere reachable from outside the host.
@@ -148,3 +215,4 @@ networks:
 volumes:
   prometheus-data:
   grafana-data:
+  victoria-metrics-data:

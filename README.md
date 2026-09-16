@@ -203,22 +203,51 @@ docker run --rm --entrypoint promtool -v "$PWD/prometheus:/p:ro" \
   prom/prometheus:v3.13.3 check rules /p/alerts/docker-exporter.rules.yml
 ```
 
-**Grafana** — `grafana/dashboards/docker-containers.json`, auto-provisioned by the
-`monitoring` profile into the *Docker* folder. Import it manually elsewhere; it uses
-a datasource variable, so it is not tied to this stack.
+**VictoriaMetrics** — `docker compose --profile vm up` runs `victoria-metrics` +
+`vmalert` instead of Prometheus, reusing the exact same `prometheus/` config files
+(no separate VM-flavored config to maintain). Two rough edges surfaced testing
+this against a real container, both fixed in the compose file, worth knowing if
+you're wiring VM up yourself elsewhere:
+
+- VM's scraper rejects `prometheus.yml` outright over its `evaluation_interval`
+  and `rule_files` fields (Prometheus-only sections; VM doesn't evaluate rules
+  itself, `vmalert` does) unless you pass `-promscrape.config.strictParse=false`
+  — this isn't a hack, it's the exact flag VM's own error message names.
+- `vmalert` refuses to start at all with alerting rules loaded unless one of
+  `-notifier.url` / `-notifier.config` / `-notifier.blackhole` is set. No
+  Alertmanager is wired up here (same as the Prometheus profile), so it runs
+  with `-notifier.blackhole`: rules still evaluate and show up via vmalert's
+  own API, there's just nowhere to deliver a notification yet.
+
+One caveat actually checked rather than assumed: `vmalert`'s `humanizeDuration`
+has a [known bug](https://github.com/VictoriaMetrics/VictoriaMetrics/issues/2569)
+where it rejects a string argument Prometheus would accept. Our alert
+descriptions always pass `$value` — a native float — so this doesn't bite us;
+confirmed by actually waiting for `DockerContainerOOMKilledStale` to fire against
+real vmalert and reading the rendered text back.
+
+**Grafana** — `grafana/dashboards/docker-containers.json`, auto-provisioned into
+the *Docker* folder under both the `monitoring` and `vm` profiles. Both
+Prometheus and VictoriaMetrics are provisioned as datasources
+(`grafana/provisioning/datasources/`); the dashboard picks one via its own
+datasource template variable, so it isn't tied to either stack. Only run one
+profile at a time — both work, there's just no reason to double-scrape.
 
 **OpenTelemetry** — `otel/otel-collector-config.yaml` scrapes the exporter and
 forwards OTLP, for Datadog, Grafana Cloud, Honeycomb, New Relic and friends. Needs
 the contrib distribution and `OTLP_ENDPOINT` / `OTLP_API_KEY` in the environment.
+VictoriaMetrics also accepts OTLP natively, so this route works for it too if you'd
+rather skip the Prometheus scrape config entirely.
 
-**VictoriaMetrics, Thanos, Grafana Mimir, Grafana Alloy** — all speak the Prometheus
-scrape protocol, so point them at `http://docker-exporter:8088/metrics` directly. No
+**Thanos, Grafana Mimir, Grafana Alloy** — all speak the Prometheus scrape
+protocol, so point them at `http://docker-exporter:8088/metrics` directly. No
 adapter needed.
 
 ## Testing locally
 
 ```bash
 docker compose --profile monitoring up -d --build
+# or: docker compose --profile vm up -d --build   (VictoriaMetrics instead of Prometheus)
 ```
 
 **Is it up?**
