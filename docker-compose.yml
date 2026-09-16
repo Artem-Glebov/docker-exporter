@@ -61,7 +61,7 @@ services:
       dockerfile: Dockerfile
     # Matches the published Docker Hub image, so `docker compose build` tags
     # exactly what gets pushed, and `docker compose pull` works once it's live.
-    image: artemglebov/docker-exporter:1.0.0
+    image: artemglebov0303/docker-exporter:1.0.0
     container_name: docker-exporter
     restart: unless-stopped
     depends_on:
