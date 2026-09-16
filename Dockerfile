@@ -15,9 +15,9 @@ RUN python -m venv /opt/venv \
 # --------------------------------------------------------------- runtime stage
 FROM python:3.14-slim-trixie
 
-LABEL org.opencontainers.image.title="prometheus-docker-exporter" \
+LABEL org.opencontainers.image.title="docker-exporter" \
       org.opencontainers.image.description="Prometheus exporter for Docker container lifecycle and health metrics" \
-      org.opencontainers.image.source="https://github.com/artem/prometheus-docker-exporter" \
+      org.opencontainers.image.source="https://github.com/Artem-Glebov/docker-exporter" \
       org.opencontainers.image.licenses="MIT"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

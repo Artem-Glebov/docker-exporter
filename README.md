@@ -1,4 +1,4 @@
-# prometheus-docker-exporter
+# docker-exporter
 
 A Prometheus exporter for Docker **container lifecycle and health**: what state every
 container is in, whether its healthcheck passes, how often it restarts, and how it

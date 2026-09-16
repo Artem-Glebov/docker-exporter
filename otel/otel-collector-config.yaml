@@ -38,7 +38,7 @@ processors:
   resource:
     attributes:
       - key: service.name
-        value: prometheus-docker-exporter
+        value: docker-exporter
         action: upsert
 
 exporters:
